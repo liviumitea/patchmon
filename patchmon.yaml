@@ -1,0 +1,248 @@
+###############################################################################
+# Namespace
+###############################################################################
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: patchmon
+---
+###############################################################################
+# Secrets – DB credentials (replace password in production)
+###############################################################################
+apiVersion: v1
+kind: Secret
+metadata:
+  name: patchmon-db-secret
+  namespace: patchmon
+type: Opaque
+stringData:
+  POSTGRES_DB: patchmon_db
+  POSTGRES_USER: patchmon_user
+  POSTGRES_PASSWORD: 'Password'
+  # convenience: backend uses DATABASE_URL directly too
+  DATABASE_URL: postgresql://patchmon_user:Password@patchmon-postgres:5432/patchmon_db
+---
+###############################################################################
+# Config – shared non-secret env
+###############################################################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: patchmon-config
+  namespace: patchmon
+data:
+  SERVER_PROTOCOL: "http"
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "3000"
+  LOG_LEVEL: "info"
+  PM_DB_CONN_MAX_ATTEMPTS: "30"
+  PM_DB_CONN_WAIT_INTERVAL: "2"
+  RATE_LIMIT_WINDOW_MS: "900000"
+  RATE_LIMIT_MAX: "100"
+  # IMPORTANT: CORS origin set to the LB IP
+  CORS_ORIGIN: "http://172.16.23.39"
+---
+###############################################################################
+# Storage: bind the existing Longhorn PV for Postgres
+###############################################################################
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: patchmon-db-pvc
+  namespace: patchmon
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi               # ignored if bound to a pre-provisioned PV
+  volumeName: patchmon-db-pv         # <- existing Longhorn PV name
+---
+###############################################################################
+# Storage: agents files (create a Longhorn-backed PVC)
+###############################################################################
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: patchmon-agents-pvc
+  namespace: patchmon
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+  # Uncomment if you need to force Longhorn class name:
+  # storageClassName: longhorn
+---
+###############################################################################
+# Postgres 17-alpine
+###############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchmon-postgres
+  namespace: patchmon
+spec:
+  clusterIP: None
+  ports:
+    - name: pg
+      port: 5432
+  selector:
+    app: patchmon-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patchmon-postgres
+  namespace: patchmon
+spec:
+  serviceName: patchmon-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchmon-postgres
+  template:
+    metadata:
+      labels:
+        app: patchmon-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: patchmon-db-secret, key: POSTGRES_DB}}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: patchmon-db-secret, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: patchmon-db-secret, key: POSTGRES_PASSWORD}}
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              # If your Longhorn volume already has a 'data' subfolder with PG_VERSION
+              # use: subPath: data
+          livenessProbe:
+            exec:
+              command: ["sh","-c","pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["sh","-c","pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: patchmon-db-pvc
+---
+###############################################################################
+# Backend
+###############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchmon-backend
+  namespace: patchmon
+spec:
+  selector:
+    app: patchmon-backend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchmon-backend
+  namespace: patchmon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchmon-backend
+  template:
+    metadata:
+      labels:
+        app: patchmon-backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/9technologygroup/patchmon-backend:latest
+          envFrom:
+            - configMapRef: {name: patchmon-config}
+            - secretRef: {name: patchmon-db-secret}
+          env:
+            # ensure DATABASE_URL always matches service DNS
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: patchmon-db-secret, key: DATABASE_URL}}
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: agent-files
+              mountPath: /app/agents
+          # Probes – simple TCP since we don't know the exact /health path
+          startupProbe:
+            tcpSocket: {port: 3000}
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            tcpSocket: {port: 3000}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 3000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: agent-files
+          persistentVolumeClaim:
+            claimName: patchmon-agents-pvc
+---
+###############################################################################
+# Frontend exposed at 172.16.23.39
+###############################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchmon-frontend
+  namespace: patchmon
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 172.16.23.39
+  selector:
+    app: patchmon-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchmon-frontend
+  namespace: patchmon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchmon-frontend
+  template:
+    metadata:
+      labels:
+        app: patchmon-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/9technologygroup/patchmon-frontend:latest
+          ports:
+            - containerPort: 3000
+          # Optional probes (simple TCP)
+          readinessProbe:
+            tcpSocket: {port: 3000}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 3000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
