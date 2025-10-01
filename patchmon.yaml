@@ -120,6 +120,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+              subPath: pgdata
               # If your Longhorn volume already has a 'data' subfolder with PG_VERSION
               # use: subPath: data
           livenessProbe:
