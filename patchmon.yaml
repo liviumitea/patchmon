@@ -67,8 +67,8 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 20Gi                 # ignored when binding to a pre-provisioned PV
-  volumeName: patchmon-db           # <-- your existing Longhorn PV name
+      storage: 5Gi                 # ignored when binding to a pre-provisioned PV
+  volumeName: patchmon-db-pv           # <-- your existing Longhorn PV name
 ---
 ###############################################################################
 # Storage – agents directory (Longhorn-backed PVC; adjust size/class as needed)
@@ -82,7 +82,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 20Gi
+      storage: 5Gi
   # storageClassName: longhorn      # uncomment if you need to pin the class
 ---
 ###############################################################################
