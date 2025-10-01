@@ -262,12 +262,15 @@ spec:
       containers:
         - name: frontend
           image: ghcr.io/9technologygroup/patchmon-frontend:latest
+          env:
+            - name: BACKEND_HOST
+              value: patchmon-backend
+            - name: BACKEND_PORT
+              value: "3001"
+            # Uncomment if your template uses a URL var instead:
+            # - name: API_URL
+            #   value: http://patchmon-backend:3001
+            # - name: BACKEND_URL
+            #   value: http://patchmon-backend:3001
           ports:
             - containerPort: 3000
-          readinessProbe:
-            tcpSocket: { port: 3000 }
-            periodSeconds: 5
-          livenessProbe:
-            tcpSocket: { port: 3000 }
-            initialDelaySeconds: 10
-            periodSeconds: 10
