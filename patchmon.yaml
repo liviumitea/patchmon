@@ -163,61 +163,48 @@ spec:
       labels:
         app: patchmon-backend
     spec:
-      # NEW: fetch the real agent scripts before the app starts
-      initContainers:
-        - name: fetch-agent-scripts
-          image: curlimages/curl:8.10.1
-          imagePullPolicy: IfNotPresent
-          command: ["sh","-c"]
-          args:
-            - >
-              set -euo pipefail;
-              mkdir -p /work;
-              cd /work;
-              echo "[init] downloading PatchMon agent scripts...";
-              curl -fsSL
-                https://raw.githubusercontent.com/PatchMon/PatchMon/main/agents/patchmon-agent.sh
-                -o patchmon-agent.sh;
-              curl -fsSL
-                https://raw.githubusercontent.com/PatchMon/PatchMon/main/agents/patchmon_install.sh
-                -o patchmon_install.sh;
-              chmod +x patchmon-agent.sh patchmon_install.sh;
-              echo "[init] done."
-          volumeMounts:
-            - name: agent-files
-              mountPath: /work
-              subPath: agents    # same subfolder we present to the app
-
       containers:
         - name: backend
           image: ghcr.io/9technologygroup/patchmon-backend:latest
           envFrom:
-            - configMapRef: { name: patchmon-config }
-            - secretRef:    { name: patchmon-db-secret }
+            - configMapRef: {name: patchmon-config}
+            - secretRef:    {name: patchmon-db-secret}
           env:
             - name: DATABASE_URL
-              valueFrom: { secretKeyRef: { name: patchmon-db-secret, key: DATABASE_URL } }
+              valueFrom: {secretKeyRef: {name: patchmon-db-secret, key: DATABASE_URL}}
           ports:
             - containerPort: 3001
           volumeMounts:
+            # Agents PVC presented as a CLEAN subfolder named "agents"
             - name: agent-files
               mountPath: /app/agents
-              subPath: agents    # the initContainer wrote the scripts here
+              subPath: agents
+            # Ensure scripts exist even if seeding is skipped
+            - name: agent-scripts
+              mountPath: /app/agents/patchmon-agent.sh
+              subPath: patchmon-agent.sh
+            - name: agent-scripts
+              mountPath: /app/agents/patchmon-agent.ps1
+              subPath: patchmon-agent.ps1
           startupProbe:
-            tcpSocket: { port: 3001 }
+            tcpSocket: {port: 3001}
             failureThreshold: 30
             periodSeconds: 2
           readinessProbe:
-            tcpSocket: { port: 3001 }
+            tcpSocket: {port: 3001}
             periodSeconds: 5
           livenessProbe:
-            tcpSocket: { port: 3001 }
+            tcpSocket: {port: 3001}
             initialDelaySeconds: 10
             periodSeconds: 10
       volumes:
         - name: agent-files
           persistentVolumeClaim:
             claimName: patchmon-agents-pvc
+        - name: agent-scripts
+          configMap:
+            name: patchmon-agent-scripts
+            defaultMode: 0755
 ---
 # Frontend
 apiVersion: v1
